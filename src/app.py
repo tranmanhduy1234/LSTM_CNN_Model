@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 
 from models.driver_state_model import DriverStateCNNLSTM
 from utils.face_geometry import get_geometric_features, crop_region
+from utils.alerts import trigger_alerts
 import mediapipe as mp
 
 # Configure page metadata and aesthetics
@@ -246,6 +247,9 @@ if run_processing and video_source is not None:
                 
                 with torch.no_grad():
                     drowsiness_prob = model(el_t, er_t, m_t, geom_t).item()
+                
+                # Trigger sound/hardware alerts locally
+                trigger_alerts(drowsiness_prob, threshold=threshold)
                     
             # 1. Update frame view
             video_placeholder.image(display_frame, channels="RGB", use_container_width=True)

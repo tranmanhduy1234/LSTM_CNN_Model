@@ -8,6 +8,7 @@ import argparse
 
 from models.driver_state_model import DriverStateCNNLSTM
 from utils.face_geometry import get_geometric_features, crop_region, MODEL_POINTS
+from utils.alerts import trigger_alerts
 
 # Initialize MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
@@ -186,6 +187,9 @@ def run_realtime_inference(model_path, source=0, seq_len=30, img_size=(64, 64), 
             
             with torch.no_grad():
                 drowsiness_prob = model(el_t, er_t, m_t, geom_t).item()
+            
+            # Trigger multi-modal alerts (Sound, simulated lights, logs)
+            trigger_alerts(drowsiness_prob, threshold=threshold)
                 
         # 4. Visualization & HUD overlay
         # Draw head pose vector if nose point is available

@@ -1,195 +1,140 @@
-# Hệ Thống Nhận Diện Trạng Thái Tài Xế Dựa Trên Kiến Trúc CNN-LSTM
+# HƯỚNG DẪN CHI TIẾT: CƠ CHẾ HOẠT ĐỘNG CỦA HỆ THỐNG PHÁT HIỆN BUỒN NGỦ (CNN-LSTM-ATTENTION)
 
-Dự án này nghiên cứu và triển khai một giải pháp học sâu (Deep Learning) kết hợp mạng tích chập không gian và mạng hồi quy thời gian (**CNN-LSTM**) theo chuỗi thời gian để nhận diện trạng thái tài xế (tỉnh táo, buồn ngủ, gật đầu, ngáp) trong thời gian thực từ luồng camera. 
-
-Hệ thống tận dụng giải pháp **MediaPipe Face Mesh** hiệu năng cao của Google để xác định các mốc khuôn mặt, kết hợp với các thuật toán hình học máy tính cổ điển và mạng học sâu tùy biến để phân tích biểu cảm và hành vi động lực học của tài xế.
+Tài liệu này giải thích chi tiết, từng bước một về cơ chế hoạt động của toàn bộ hệ thống từ lúc Camera thu hình cho đến khi còi hú cảnh báo, đồng thời làm rõ cơ sở khoa học tại sao mô hình Deep Learning của bạn là trái tim không thể thay thế của dự án.
 
 ---
 
-## 📐 Kiến Trúc Mô Hình Kết Hợp CNN-LSTM
+## 🧭 BẢN ĐỒ LUỒNG DỮ LIỆU (DATA FLOW)
 
-Mô hình được xây dựng theo kiến trúc phân tầng, phân tách nhiệm vụ trích xuất đặc trưng không gian (Spatial Features) và học đặc trưng động học thời gian (Temporal Features):
-
-```mermaid
-graph TD
-    Input[Khung hình Video/Webcam] --> MP[MediaPipe Face Mesh]
-    
-    %% Nhánh trích xuất ảnh vùng
-    MP --> Crop[Cắt vùng ảnh]
-    Crop --> |Mắt trái| Crop_EL[Left Eye Crop: 64x64x3]
-    Crop --> |Mắt phải| Crop_ER[Right Eye Crop: 64x64x3]
-    Crop --> |Miệng| Crop_M[Mouth Crop: 64x64x3]
-    
-    Crop_EL --> SiameseCNN[Siamese Eye CNN<br/>Chia sẻ trọng số]
-    Crop_ER --> SiameseCNN
-    Crop_M --> MouthCNN[Mouth CNN<br/>Độc lập]
-    
-    SiameseCNN --> |Vectơ đặc trưng| Feat_EL[Left Eye: 64D]
-    SiameseCNN --> |Vectơ đặc trưng| Feat_ER[Right Eye: 64D]
-    MouthCNN --> |Vectơ đặc trưng| Feat_M[Mouth: 64D]
-    
-    %% Nhánh trích xuất hình học
-    MP --> Geom[Tính toán hình học]
-    Geom --> GeomVec[Vectơ đặc trưng hình học: 10D<br/>EAR, MAR, Pitch, Yaw, Roll, Tỷ lệ khoảng cách]
-    
-    %% Kết hợp và dự báo
-    Feat_EL & Feat_ER & Feat_M & GeomVec --> Concat[Gộp đặc trưng: 202-dim]
-    Concat --> Projection[Linear Projection: 128-dim]
-    Projection --> |Chuỗi 30 khung hình| LSTM[2-Layer LSTM<br/>Hidden size: 128]
-    LSTM --> Head[Phân lớp: Linear -> Dropout -> Sigmoid]
-    Head --> Output[Xác suất buồn ngủ: [0.0 - 1.0]]
-```
-
-### 1. Trích xuất đặc trưng không gian (Spatial Features)
-*   **Siamese CNN cho mắt**: Do cấu trúc hình học của mắt trái và mắt phải tương đồng nhau, hệ thống sử dụng mạng Siamese (chia sẻ chung bộ trọng số weights giữa 2 nhánh CNN) giúp giảm 50% số lượng tham số cần huấn luyện ở nhánh này, tăng tốc độ hội tụ và ngăn chặn overfitting.
-*   **Mouth CNN độc lập**: Được thiết kế riêng để học các cấu trúc đặc thù của miệng khi đóng, mở rộng, nói chuyện hoặc ngáp dài.
-*   **Vectơ hình học bổ trợ (10 chiều)**: Cung cấp trực tiếp các thông số định lượng giúp mạng LSTM có các gợi ý vật lý rõ ràng về trạng thái của khuôn mặt.
-
-### 2. Học đặc trưng động lực học thời gian (Temporal Features)
-*   **Chuỗi thời gian (Sliding Window)**: Mặc định chọn cửa sổ trượt dài $T = 30$ khung hình (~1 giây video ở tốc độ 30 FPS).
-*   **Mạng LSTM (Long Short-Term Memory)**: Mạng LSTM 2 lớp với 128 đơn vị ẩn chịu trách nhiệm ghi nhớ mối quan hệ liên tiếp giữa các khung hình (ví dụ: chuỗi 5 khung hình nhắm mắt chỉ là chớp mắt tự nhiên, nhưng chuỗi 25 khung hình nhắm mắt liên tục là dấu hiệu buồn ngủ).
-
----
-
-## 🧮 Cơ Sở Toán Học & Hình Học
-
-Hệ thống tính toán các giá trị hình học trực tiếp từ các mốc tọa độ (landmarks) của MediaPipe Face Mesh làm đặc trưng bổ trợ:
-
-### 1. Chỉ số mở mắt - Eye Aspect Ratio (EAR)
-EAR đo lường độ mở của mắt dựa trên tỷ lệ giữa khoảng cách chiều dọc và chiều ngang của mắt.
+Khi bạn bật camera giám sát, dữ liệu sẽ chạy qua một chuỗi xử lý khép kín gồm 4 bước lớn:
 
 ```text
-       p2     p3
-     .    . .    .
-  p1               p4
-     .    . .    .
-       p6     p5
+ [Bước 1: Thu hình & Trích xuất] -> [Bước 2: Phân tích Không gian (CNN)] -> [Bước 3: Ghi nhớ Thời gian (LSTM & Attention)] -> [Bước 4: Cảnh báo (Alerts)]
 ```
 
-Công thức tính cho mỗi mắt:
-$$EAR = \frac{||p_2 - p_6|| + ||p_3 - p_5||}{2 ||p_1 - p_4||}$$
-
-*   **Ý nghĩa**: Khi mắt mở to, EAR dao động từ $0.28$ đến $0.35$. Khi mí mắt nhắm lại, EAR giảm xuống gần bằng $0.1$.
-*   **Các mốc MediaPipe sử dụng**:
-    *   **Mắt trái**: $p_1=33, p_2=160, p_3=158, p_4=133, p_5=153, p_6=144$
-    *   **Mắt phải**: $p_1=362, p_2=385, p_3=387, p_4=263, p_5=373, p_6=380$
-
-### 2. Chỉ số mở miệng - Mouth Aspect Ratio (MAR)
-MAR phản ánh độ mở rộng của khoang miệng để phát hiện hành động ngáp:
-$$MAR = \frac{||p_{13} - p_{14}||}{||p_{78} - p_{308}||}$$
-
-*   **Ý nghĩa**: Điểm $13$ và $14$ nằm trên đường viền trong của môi trên và môi dưới. Điểm $78$ và $308$ là hai khóe miệng. Khi ngáp lớn, khoảng cách dọc $||p_{13} - p_{14}||$ tăng vọt khiến chỉ số MAR vượt ngưỡng $0.5$.
-
-### 3. Ước lượng tư thế đầu - Head Pose (3D Perspective-n-Point)
-Để phát hiện hành vi tài xế cúi đầu gật gù hoặc quay mặt đi hướng khác, hệ thống giải bài toán PnP (Perspective-n-Point) bằng cách chiếu các tọa độ 2D thực tế trên ảnh sang mô hình 3D chuẩn của khuôn mặt (Anthropometric 3D Face Model):
-
-$$\mathbf{p}_{2D} = \mathbf{K} \left[ \mathbf{R} \mid \mathbf{t} \right] \mathbf{P}_{3D}$$
-
-*   **Ma trận camera dự phóng $\mathbf{K}$**: Khởi tạo tự động dựa trên độ rộng ảnh ($f_x = f_y = W$, điểm trung tâm $c_x = W/2, c_y = H/2$).
-*   **Giải thuật PnP**: Hàm `cv2.solvePnP` tìm ra ma trận xoay $\mathbf{R}$ (Rotation Vector) và ma trận tịnh tiến $\mathbf{t}$ (Translation Vector).
-*   **Phân tích góc Euler**: Áp dụng hàm phân rã ma trận chiếu `cv2.decomposeProjectionMatrix` để trích xuất 3 góc Euler của đầu:
-    *   **Pitch (Độ gật/cúi đầu)**: Dương khi cúi xuống, âm khi ngước lên.
-    *   **Yaw (Độ quay đầu)**: Dương khi quay sang phải, âm khi quay sang trái.
-    *   **Roll (Độ nghiêng đầu)**: Nghiêng sang trái hoặc phải.
+Dưới đây là chi tiết kỹ thuật của từng bước:
 
 ---
 
-## 📂 Danh Mục Các Tệp Nguồn
+## BƯỚC 1: THU HÌNH & TRÍCH XUẤT ĐẶC TRƯNG HÌNH HỌC (MediaPipe & OpenCV)
 
-Dưới đây là liên kết và chi tiết chức năng của các tệp tin trong không gian làm việc:
+Mỗi giây, Camera sẽ chụp khoảng 30 khung hình (frames). Với mỗi khung hình độc lập, hệ thống thực hiện trích xuất thông tin:
 
-*   [requirements.txt](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/requirements.txt): Liệt kê các gói thư viện cần cài đặt với các phiên bản tương thích (ghim cứng `mediapipe==0.10.14` để đảm bảo có module `solutions` và tương thích tốt với NumPy 2.0+).
-*   `src/`: Thư mục chứa toàn bộ mã nguồn.
-    *   [src/utils/face_geometry.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/utils/face_geometry.py): Thư viện tính toán EAR, MAR, Head Pose Euler angles và hàm cắt (crop) các vùng mắt/miệng để chuẩn hóa về kích thước 64x64.
-    *   [src/models/driver_state_model.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py): Thiết kế kiến trúc mạng neural PyTorch gồm hai mạng tích chập [FeatureExtractorCNN](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L4) và lớp mạng tích hợp chuỗi [DriverStateCNNLSTM](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L44) kết thúc bằng hàm kích hoạt Sigmoid.
-    *   [src/dataset.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/dataset.py): Triển khai lớp nạp dữ liệu [DriverStateDataset](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/dataset.py#L5) kế thừa từ `torch.utils.data.Dataset`, tự động chuyển đổi định dạng ảnh `uint8` sang Tensor `float32` và thực hiện chuẩn hóa pixel về đoạn $[0.0, 1.0]$.
-    *   [src/generate_dummy_data.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/generate_dummy_data.py): Kịch bản mô phỏng tín hiệu chuỗi thời gian sinh động (mắt nhắm, mở, nhấp nháy, miệng mở ngáp, đầu gật) để tạo tập huấn luyện giả lập.
-    *   [src/train.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/train.py): Quy trình huấn luyện mô hình PyTorch, tự động lưu mô hình tốt nhất dựa trên Val Loss vào thư mục `checkpoints/best_model.pth` và vẽ đồ thị học tập lưu vào `reports/`.
-    *   [src/preprocess.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/preprocess.py): Tiền xử lý các tập tin video thô thực tế để chuyển đổi hàng loạt thành tệp dữ liệu huấn luyện nén `.npz`.
-    *   [src/inference.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/inference.py): Kịch bản nhận diện thời gian thực qua webcam, vẽ trực quan ma trận trục tọa độ hướng đầu 3D (3D Head Pose Axis) và bảng điều khiển HUD sinh động.
-    *   [src/app.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/app.py): Ứng dụng dashboard web được xây dựng bằng Streamlit hiển thị trực tiếp video, các vùng ảnh cắt (crops), thẻ thông số thời gian thực và biểu đồ động.
+### 1. Xác định tọa độ khuôn mặt (MediaPipe Face Mesh)
+Hệ thống sử dụng mô hình AI của Google để quét khuôn mặt và trả về **468 mốc tọa độ 3D** (X, Y, Z). Các mốc này được ghim trực tiếp lên mí mắt, lông mày, mũi, môi và cằm.
 
----
+### 2. Cắt ảnh các vùng quan trọng (Facial Crops)
+Dựa vào các tọa độ mốc, hàm `crop_region` trong tệp [src/utils/face_geometry.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/utils/face_geometry.py#L93) sẽ tự động cắt ra 3 vùng ảnh nhỏ từ khuôn mặt, sau đó co giãn (resize) về kích thước chuẩn **64x64 pixel**:
+*   **Vùng mắt trái** (chứa con ngươi và mí mắt trái).
+*   **Vùng mắt phải** (chứa con ngươi và mí mắt phải).
+*   **Vùng miệng** (chứa toàn bộ đôi môi).
 
-## 🛠️ Hướng Dẫn Cài Đặt Chi Tiết
-
-### 1. Chuẩn bị môi trường
-Khuyên dùng môi trường ảo Python 3.12 (ví dụ: Conda):
-```bash
-# Tạo môi trường ảo với Python 3.12
-conda create -n tttn python=3.12 -y
-# Kích hoạt môi trường ảo
-conda activate tttn
-```
-
-### 2. Cài đặt các thư viện cần thiết
-Cài đặt tất cả các gói phụ thuộc được định nghĩa trong [requirements.txt](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/requirements.txt):
-```bash
-pip install -r requirements.txt
-```
+### 3. Tính toán các chỉ số toán học hình học (Geometric Vector)
+Hệ thống sử dụng toán học Euclid để tính ra một vectơ đặc trưng hình học gồm 10 chỉ số từ các mốc tọa độ:
+*   **Chỉ số mở mắt - EAR (Eye Aspect Ratio):** Tính bằng cách lấy khoảng cách dọc mí mắt chia cho khoảng cách ngang của mắt.
+    *   *Mắt mở:* EAR $\approx$ 0.3
+    *   *Mắt nhắm:* EAR $\approx$ 0.1
+*   **Chỉ số mở miệng - MAR (Mouth Aspect Ratio):** Tính bằng tỷ lệ khoảng cách dọc của lòng môi trong chia cho bề ngang khóe miệng.
+    *   *Miệng đóng:* MAR $\approx$ 0.1
+    *   *Miệng ngáp to:* MAR $\ge$ 0.5
+*   **Tư thế đầu - Head Pose (Pitch, Yaw, Roll):** Thuật toán hình học **solvePnP** so khớp các điểm mốc 2D trên ảnh với mô hình đầu 3D chuẩn để tính ra góc xoay đầu:
+    *   *Pitch:* Độ gật đầu (cúi xuống/ngửa lên).
+    *   *Yaw:* Độ quay đầu (quay trái/quay phải).
+    *   *Roll:* Độ nghiêng đầu (nghiêng sang vai trái/phải).
+*   **Các tỷ lệ khoảng cách phụ:** Tỷ lệ khoảng cách từ mũi đến miệng, miệng đến cằm, lông mày đến mắt để bổ trợ thông tin khi tài xế méo miệng hoặc nhăn trán gục đầu.
 
 ---
 
-## 🚀 Hướng Dẫn Chạy Pipeline Dự Án
+## BƯỚC 2: PHÂN TÍCH KHÔNG GIAN (Mạng Tích Chập CNN)
 
-Dự án cung cấp một pipeline huấn luyện khép kín, cho phép chạy thử nghiệm ngay cả khi chưa có dữ liệu video thật thông qua dữ liệu giả lập.
+Ba vùng ảnh cắt và vectơ hình học ở Bước 1 sẽ được nạp vào phần đầu của mô hình Deep Learning trong tệp [src/models/driver_state_model.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py):
 
-### Bước 1: Tạo dữ liệu giả lập để thử nghiệm hệ thống
-Để kiểm tra xem mô hình và quy trình có hoạt động chính xác không, hãy chạy tệp mô phỏng dữ liệu:
-```bash
-python src/generate_dummy_data.py
-```
-*Kết quả:* Tạo ra hai tệp [data/train_dummy.npz](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/data/train_dummy.npz) và [data/val_dummy.npz](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/data/val_dummy.npz).
+### 1. Nhánh Siamese CNN cho mắt
+Ảnh mắt trái và mắt phải (kích thước 64x64x3) được đưa qua chung một mạng CNN ([FeatureExtractorCNN](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L4)). Mạng này gồm các tầng Convolution (tích chập) liên tiếp để trích xuất các đường nét mí mắt, đồng tử và chuyển đổi mỗi bức ảnh mắt thành một vectơ đặc trưng nén **64 chiều (64D)** biểu thị trạng thái không gian của mắt.
 
-### Bước 2: Huấn luyện mô hình từ đầu
-Huấn luyện mô hình CNN-LSTM trên tập dữ liệu đã chuẩn bị:
-```bash
-python src/train.py
-```
-*Kết quả:*
-*   Mô hình tốt nhất được lưu tại [checkpoints/best_model.pth](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/checkpoints/best_model.pth).
-*   Đồ thị theo dõi Loss/Accuracy được lưu tại `reports/training_curves.png`.
+### 2. Nhánh CNN cho miệng
+Ảnh miệng được đưa qua một mạng CNN độc lập khác để trích xuất các nếp nhăn môi, bóng tối trong khoang miệng khi mở lớn và chuyển đổi thành một vectơ nén **64 chiều (64D)**.
 
-### Bước 3: Chạy chương trình nhận diện thời gian thực (Webcam HUD)
-Sau khi đã có tệp mô hình đã huấn luyện, chạy nhận diện trực tiếp qua camera của bạn:
-```bash
-python src/inference.py --model_path checkpoints/best_model.pth --source 0
-```
-*(Ấn phím **'q'** khi đang chọn cửa sổ hiển thị OpenCV để tắt chương trình).*
+### 3. Nhánh 1D CNN cho chuỗi hình học
+Vectơ hình học 10 chiều (EAR, MAR, góc đầu) qua các khung hình liên tiếp được đưa qua một mạng tích chập 1 chiều ([GeometricFeatureExtractor1DCNN](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L45)) để làm mịn và trích chọn các biến động cục bộ của chỉ số, chuyển đổi thành vectơ đặc trưng **64 chiều (64D)**.
 
-### Bước 4: Khởi động Dashboard phân tích thông minh (Streamlit Web App)
-Khởi chạy giao diện web để tải lên video hoặc xem đồ thị động:
-```bash
-streamlit run src/app.py
-```
-Sau đó mở trình duyệt web truy cập địa chỉ được in trên màn hình Terminal (thường là `http://localhost:8501`).
+### 4. Gộp đặc trưng (Fusion)
+Tại mỗi khung hình (tại thời điểm $t$), ta gộp tất cả đặc trưng không gian lại:
+$$\text{Đặc trưng gộp} = [\text{Mắt trái (64D)} + \text{Mắt phải (64D)} + \text{Miệng (64D)} + \text{Hình học (64D)}] = 256 \text{ chiều (256D)}$$
+Sau đó, một tầng Tuyến tính (Linear) sẽ nén vectơ này từ 256D xuống **128 chiều (128D)**.
 
 ---
 
-## 📹 Xử Lý Dữ Liệu Video Tự Quay Hoặc Bộ Dữ Liệu Lớn
+## BƯỚC 3: GHI NHỚ THỜI GIAN (Mạng LSTM & Cơ Chế Attention)
 
-Để huấn luyện mô hình nhận diện hành vi buồn ngủ thực tế từ các bộ dữ liệu video (như YawDD, NTHU Drowsy, v.v.):
+Vì buồn ngủ là một quá trình diễn ra theo thời gian (tài xế nhắm mắt lâu hoặc cúi đầu gục xuống vài giây), nên hệ thống không thể chỉ nhìn vào 1 khung hình đơn lẻ để kết luận. 
 
-1.  **Tổ chức thư mục dữ liệu**:
-    ```text
-    data/raw_dataset/
-    ├── awake/
-    │   ├── driver_normal_1.mp4
-    │   └── driver_normal_2.avi
-    └── drowsy/
-        ├── driver_yawn_1.mp4
-        └── driver_sleepy_2.mp4
-    ```
+Hệ thống sẽ gom **30 khung hình liên tiếp** (tương đương khoảng 1 giây lái xe thực tế) thành một chuỗi dữ liệu đầu vào kích thước `(30, 128)` và xử lý như sau:
 
-2.  **Tiền xử lý chuyển đổi video sang dạng mảng NumPy**:
-    Chạy tiền xử lý để cắt ảnh các vùng quan tâm, tính toán chỉ số hình học và gộp thành các chuỗi 30 khung hình:
-    ```bash
-    python src/preprocess.py --data_dir data/raw_dataset --output_path data/real_processed.npz --seq_len 30 --step_size 15
-    ```
+### 1. Mạng bộ nhớ dài-ngắn hạn (LSTM)
+Chuỗi 30 khung hình được nạp vào mạng LSTM 2 lớp ([self.lstm](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L141)). Mạng LSTM sẽ quét qua từng khung hình từ $t_1$ đến $t_{30}$ và học cách ghi nhớ các thay đổi:
+*   Nếu tài xế chớp mắt nhanh (chỉ nhắm mắt ở khung hình $t_{14}, t_{15}$ rồi mở ra ngay ở $t_{16}$), LSTM sẽ nhận biết đây là chớp mắt bình thường.
+*   Nếu tài xế nhắm mắt liên tục (từ khung hình $t_5$ đến $t_{30}$ vẫn chưa mở), LSTM sẽ tích lũy trạng thái mệt mỏi tăng dần.
 
-3.  **Huấn luyện lại mô hình**:
-    Chỉnh sửa đường dẫn tệp dữ liệu huấn luyện trong [src/train.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/train.py) thành:
-    ```python
-    train_data = "data/real_processed.npz"
-    # Sau đó chạy huấn luyện: python src/train.py
-    ```
+### 2. Cơ chế chú ý (Temporal Attention)
+*   *Vấn đề của LSTM truyền thống:* Nó thường chỉ lấy thông tin ở khung hình cuối cùng ($t_{30}$), dẫn đến việc dễ bỏ sót những khoảnh khắc tài xế gục đầu nhanh ở giữa chuỗi ($t_{15}$) rồi ngẩng lên ngay.
+*   *Giải pháp Attention:* Lớp [TemporalAttention](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py#L75) sẽ tính toán mức độ quan trọng (trọng số $\alpha$) cho từng khung hình trong số 30 khung hình. Khung hình nào có hiện tượng nhắm mắt sâu hoặc gục đầu sẽ được gán trọng số $\alpha$ rất cao.
+*   Sau đó, hệ thống cộng chập có trọng số để tạo ra một **Vectơ Ngữ Cảnh (Context Vector)** đại diện tối ưu cho toàn bộ chuỗi.
+
+### 3. Phân lớp dự đoán (Classifier)
+Vectơ ngữ cảnh này được đưa qua các tầng tuyến tính kết nối hoàn toàn (Dense layers) và kết thúc bằng hàm kích hoạt **Sigmoid** để đưa ra kết quả cuối cùng là **Xác suất buồn ngủ (Drowsiness Probability)** nằm trong khoảng từ `0.0` (tỉnh táo hoàn toàn) đến `1.0` (ngủ gật hoàn toàn).
+
+---
+
+## BƯỚC 4: HỆ THỐNG CẢNH BÁO ĐA PHƯƠNG THỨC (Alerts)
+
+Xác suất buồn ngủ đầu ra của mô hình (ví dụ: `prob = 0.85`) sẽ được đưa vào bộ xử lý cảnh báo trong tệp [src/utils/alerts.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/utils/alerts.py#L32):
+
+1.  **Cảnh báo trên màn hình HUD:** Cửa sổ OpenCV / Streamlit hiển thị dòng chữ cảnh báo màu đỏ chói nhấp nháy: `🚨 WARNING! DROWSY DETECTED 🚨` và thanh trạng thái chuyển sang màu đỏ cảnh báo.
+2.  **Cảnh báo Âm thanh:** Thư viện `sounddevice` tự động tạo ra sóng hình sin tần số cao (1200Hz - tiếng còi rít chói tai) và phát trực tiếp ra loa máy tính của bạn theo các nhịp dồn dập nhằm đánh thức tài xế ngay lập tức.
+3.  **Mô phỏng tín hiệu phần cứng:** In ra màn hình console dòng lệnh kích hoạt thiết bị ngoại vi: `[HARDWARE TRIGGER] LED = FLASHING RED, BUZZER = ON`. (Tín hiệu này có thể kết nối trực tiếp với cổng COM/Serial hoặc chân GPIO của vi điều khiển để bật còi hú/đèn LED vật lý trên xe ô tô).
+
+---
+
+## 🧠 VAI TRÒ CỐT LÕI CỦA MÔ HÌNH CNN-LSTM TỰ THIẾT KẾ (TẠI SAO KHÔNG DÙNG THUẬT TOÁN RẼ NHÁNH IF-ELSE?)
+
+Một câu hỏi quan trọng trong nghiên cứu khoa học: *Nếu ta đã tính được EAR, MAR và góc đầu bằng hình học, tại sao không dùng các câu lệnh rẽ nhánh điều kiện `if-else` đơn giản để báo động (ví dụ: `if EAR < 0.2: báo_động()`)?*
+
+Thực tế, nếu chỉ sử dụng các ngưỡng cố định thông thường, hệ thống sẽ **thất bại hoàn toàn và không thể đưa vào cabin ô tô thực tế** vì các lý do sau:
+
+### 1. Sự bất khả thi của ngưỡng EAR cố định do sinh trắc học cá nhân
+*   **Cấu trúc mắt khác nhau:** Người mắt một mí hoặc nhỏ tự nhiên có chỉ số EAR lúc thức chỉ khoảng `0.18 - 0.22`, trong khi người mắt to có EAR lên tới `0.35`.
+*   **Hậu quả:** Nếu đặt một ngưỡng cứng `if EAR < 0.22`, hệ thống sẽ **hú còi báo động liên tục đối với người mắt nhỏ** dù họ đang thức, trong khi lại **bỏ sót hoàn toàn người mắt to** khi họ đã lờ đờ nhắm hờ mắt buồn ngủ.
+*   **Giải pháp của CNN-LSTM:** Mạng neural học cách tự thích ứng với biên độ dao động EAR tương đối của từng tài xế cụ thể qua chuỗi thời gian, tự động định hình thế nào là mắt "nhắm" so với trạng thái bình thường của chính người đó.
+
+### 2. Sự khác biệt về thời gian (Temporal Dynamics) - Sự cần thiết của LSTM
+*   **Chớp mắt vs Micro-sleep (Ngủ gật ngắn):**
+    *   Tài xế tỉnh táo chớp mắt rất nhiều, thời gian nhắm mắt rất nhanh (chỉ từ `0.1 - 0.3 giây`, tương đương 3 - 9 khung hình).
+    *   Tài xế ngủ gật có hành vi nhắm mắt kéo dài (từ `1.0 - 3.0 giây` trở lên, tương đương 30 - 90 khung hình).
+    *   Cả hai hành vi này đều đưa giá trị EAR về sát `0.1`. Thuật toán `if-else` tĩnh không thể phân biệt được thời lượng nhắm mắt này nếu có nhiễu bắt điểm, dẫn đến còi báo động kêu vô tội vạ mỗi lần tài xế chớp mắt. Mạng **LSTM** ghi nhớ toàn bộ chuỗi và chỉ phát tín hiệu khi trạng thái nhắm mắt tích lũy qua nhiều khung hình liên tiếp.
+*   **Nói chuyện/Cười vs Ngáp dài:**
+    *   Tài xế nói chuyện làm môi chuyển động mở ra liên tục (MAR tăng giảm nhanh theo nhịp).
+    *   Tài xế ngáp sẽ mở to miệng và giữ nguyên khẩu hình ngáp trong `3 - 5 giây`.
+    *   Mạng **LSTM** phân tích nhịp điệu chuyển động để lọc bỏ hoàn toàn các trường hợp nói chuyện hoặc cười, tránh báo động sai.
+
+### 3. Sự giới hạn của chỉ số hình học EAR/MAR - Sức mạnh của Mạng Tích Chập 2D CNN
+Chỉ số EAR và MAR chỉ là các chỉ số khoảng cách thô được lập trình thủ công (hand-crafted features), bỏ qua lượng thông tin khổng lồ từ các pixel ảnh thực tế:
+*   **Độ trĩu nặng của mí mắt (Heavy Eyelids):** Khi bắt đầu buồn ngủ, mí mắt tài xế trĩu nặng sụp xuống từ từ, cơ mặt giãn ra, và hướng nhìn con ngươi bắt đầu đờ đẫn hướng xuống dưới. Chỉ số hình học EAR chỉ đo khoảng cách mí mắt nên không thể phân biệt được mắt đang đờ đẫn hay chỉ đang nhìn xuống mặt đường. Nhánh **Eye CNN** sẽ quét toàn bộ ma trận pixel của vùng mắt để nhận biết cấu trúc da mí mắt sụp và vị trí tròng mắt.
+*   **Ngáp che tay (Facial Obstruction):** Khi tài xế ngáp và đưa tay lên che miệng theo lịch sự, MediaPipe Face Mesh sẽ không thể định vị chính xác môi và tính sai MAR. Tuy nhiên, nhánh **Mouth CNN** khi được huấn luyện trên dữ liệu thực tế sẽ học được đặc trưng ảnh của một bàn tay chắn trước miệng kết hợp với cơ mặt xung quanh chuyển động để vẫn nhận diện ra hành vi ngáp.
+
+---
+
+## 🛠️ TỔNG HỢP CÁC TỆP TIN DỰ ÁN & VAI TRÒ
+
+| Tên tệp tin | Vai trò trong hệ thống |
+| :--- | :--- |
+| [requirements.txt](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/requirements.txt) | Cài đặt các thư viện cần thiết. |
+| [src/utils/face_geometry.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/utils/face_geometry.py) | **(Bước 1)** Tính EAR, MAR, góc nghiêng đầu và cắt ảnh mắt/miệng. |
+| [src/models/driver_state_model.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/models/driver_state_model.py) | **(Bước 2 & 3)** Định nghĩa mạng Deep Learning CNN-LSTM-Attention để dự đoán. |
+| [src/utils/alerts.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/utils/alerts.py) | **(Bước 4)** Kích hoạt còi hú qua loa và xuất lệnh điều khiển đèn LED cảnh báo. |
+| [src/dataset.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/dataset.py) | Định nghĩa bộ nạp dữ liệu tuần tự phục vụ cho việc huấn luyện. |
+| [src/generate_dummy_data.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/generate_dummy_data.py) | Tạo dữ liệu giả lập (chuỗi nhắm mắt, ngáp, gật gù) để test thử nghiệm. |
+| [src/train.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/train.py) | Chạy vòng lặp tối ưu hóa trọng số mô hình và vẽ đồ thị kết quả học tập. |
+| [src/preprocess.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/preprocess.py) | Đọc và xử lý hàng loạt video thực tế để tạo tập dữ liệu huấn luyện. |
+| [src/inference.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/inference.py) | Giao diện camera OpenCV thời gian thực vẽ các trục tọa độ đầu 3D. |
+| [src/app.py](file:///home/tranmanhduy/Workspace/ptithcm/TTTN/tttnC38/src/app.py) | Giao diện dashboard giám sát trên nền tảng Web Streamlit sinh động. |
