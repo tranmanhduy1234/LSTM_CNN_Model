@@ -1,0 +1,91 @@
+graph TD
+    %% Định nghĩa các lớp màu sắc (Styling)
+    classDef preprocessing fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef cnn fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef temporal fill:#ffb,stroke:#333,stroke-width:2px;
+    classDef classifier fill:#bfb,stroke:#333,stroke-width:2px;
+    classDef alerting fill:#fbb,stroke:#333,stroke-width:2px;
+
+    %% -------------------------------------------------------------
+    %% PHẦN TIỀN XỬ LÝ (PREPROCESSING)
+    %% -------------------------------------------------------------
+    subgraph Preprocessing_Stage [Bước 1: Thu thập & Tiền xử lý dữ liệu]
+        Frame[Khung hình Video / Webcam]:::preprocessing --> FaceMesh[MediaPipe Face Mesh]:::preprocessing
+        
+        %% Nhánh trích xuất vùng ảnh
+        FaceMesh --> |Tọa độ mốc mặt| CropExtractor[Bộ trích xuất cắt ảnh]:::preprocessing
+        CropExtractor --> |Cắt mắt trái| CropL[Ảnh Mắt Trái: 64x64x3]:::preprocessing
+        CropExtractor --> |Cắt mắt phải| CropR[Ảnh Mắt Phải: 64x64x3]:::preprocessing
+        CropExtractor --> |Cắt miệng| CropM[Ảnh Miệng: 64x64x3]:::preprocessing
+        
+        %% Nhánh trích xuất chỉ số hình học
+        FaceMesh --> |468 Landmarks| GeometryCalculator[Bộ tính toán hình học]:::preprocessing
+        GeometryCalculator --> |EAR Left / Right| EAR[Chỉ số mở mắt EAR]:::preprocessing
+        GeometryCalculator --> |MAR| MAR[Chỉ số mở miệng MAR]:::preprocessing
+        GeometryCalculator --> |solvePnP 3D Model| HeadPose[Tư thế đầu: Pitch, Yaw, Roll]:::preprocessing
+        GeometryCalculator --> |Khoảng cách mắt-miệng-cằm| Relations[Tương quan khoảng cách]:::preprocessing
+        
+        EAR & MAR & HeadPose & Relations --> GeomVec[Vectơ hình học thô: 10D]:::preprocessing
+    end
+
+    %% -------------------------------------------------------------
+    %% MÔ HÌNH DEEP LEARNING (CNN-LSTM-ATTENTION)
+    %% -------------------------------------------------------------
+    subgraph Deep_Learning_Model [Mô hình Deep Learning CNN-LSTM-Attention]
+        
+        %% Bộ trích xuất không gian (CNN)
+        subgraph Spatial_Extractor [Trích xuất đặc trưng Không gian]
+            CropL --> SiameseCNN[Siamese Eye CNN<br/>FeatureExtractorCNN]:::cnn
+            CropR --> SiameseCNN
+            CropM --> MouthCNN[Mouth CNN<br/>FeatureExtractorCNN]:::cnn
+            
+            SiameseCNN --> |Vectơ mắt trái| FeatL[64D Vector]:::cnn
+            SiameseCNN --> |Vectơ mắt phải| FeatR[64D Vector]:::cnn
+            MouthCNN --> |Vectơ miệng| FeatM[64D Vector]:::cnn
+            
+            GeomVec --> |Chuỗi 30 khung hình| GeomCNN1D[Geometric 1D CNN<br/>GeometricFeatureExtractor1DCNN]:::cnn
+            GeomCNN1D --> |Vectơ biến thiên hình học| FeatG[64D Vector]:::cnn
+        end
+        
+        %% Fusing Layer
+        FeatL & FeatR & FeatM & FeatG --> Concat[Gộp đặc trưng: 256D]:::cnn
+        Concat --> Project[Tầng chiếu tuyến tính & Dropout: 128D]:::cnn
+        
+        %% Bộ trích xuất thời gian (LSTM & Attention)
+        subgraph Temporal_Modeler [Mạng chuỗi thời gian]
+            Project --> |Chuỗi thời gian: 30x128| LSTM[2-Layer LSTM<br/>Hidden Size: 128]:::temporal
+            LSTM --> |Hidden States: h_1...h_30| Attention[Temporal Self-Attention]:::temporal
+            Attention --> |Trọng số chú ý| AttentionWeights[Trọng số từng frame: alpha]:::temporal
+            Attention --> |Cộng chập trọng số| Context[Vectơ Ngữ Cảnh: 128D]:::temporal
+        end
+        
+        %% Đầu phân lớp dự đoán
+        subgraph Prediction_Head [Bộ phân lớp Classifier]
+            Context --> Dense1[Dense Layer: 128 -> 64 + ReLU]:::classifier
+            Dense1 --> Dropout[Dropout: 0.4]:::classifier
+            Dropout --> Dense2[Dense Layer: 64 -> 1]:::classifier
+            Dense2 --> Sigmoid[Hàm kích hoạt Sigmoid]:::classifier
+            Sigmoid --> Probability[Xác suất buồn ngủ: 0.0 - 1.0]:::classifier
+        end
+    end
+
+    %% -------------------------------------------------------------
+    %% BỘ CẢNH BÁO ĐA PHƯƠNG THỨC
+    %% -------------------------------------------------------------
+    subgraph Alert_System [Bước 4: Bộ Cảnh báo Đa phương thức]
+        Probability --> AlertManager[Bộ quản lý cảnh báo: trigger_alerts]:::alerting
+        
+        AlertManager --> |Prob >= Ngưỡng| Danger[Trạng thái: NGUY HIỂM]:::alerting
+        AlertManager --> |0.4 <= Prob < Ngưỡng| Warning[Trạng thái: CẢNH BÁO]:::alerting
+        AlertManager --> |Prob < 0.4| Normal[Trạng thái: AN TOÀN]:::alerting
+        
+        %% Các kênh đầu ra của cảnh báo Danger
+        Danger --> AlertHUD[Nhấp nháy HUD đỏ 'WARNING!']:::alerting
+        Danger --> AlertSound[Còi hú dồn dập 1200Hz qua loa]:::alerting
+        Danger --> AlertHardware[Xuất tín hiệu bật còi & LED ĐỎ]:::alerting
+        
+        %% Các kênh đầu ra của cảnh báo Warning
+        Warning --> AlertWarnHUD[Hiển thị HUD vàng 'WARNING']:::alerting
+        Warning --> AlertSoundSoft[Tiếng beep chậm 600Hz]:::alerting
+        Warning --> AlertHardwareWarn[Xuất tín hiệu nháy LED VÀNG]:::alerting
+    end
